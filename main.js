@@ -151,40 +151,76 @@ const productCrawler = new PlaywrightCrawler({
         console.log(`Traitement du produit: ${url}`);
 
         try {
-            // Attendre que la page soit chargée
-            await page.waitForSelector('.style-number-font, format-text', { timeout: 30000 });
+            // Attendre que la page soit chargée - attendre que les éléments soient attachés au DOM (pas nécessairement visibles)
+            await page.waitForSelector('.style-number-font, format-text', { 
+                timeout: 30000,
+                state: 'attached' // Attendre que l'élément soit attaché au DOM, pas nécessairement visible
+            });
             
             // Attendre un peu pour que AngularJS charge le contenu
             await page.waitForTimeout(2000);
 
             // Extraire le SKU
-            const sku = await page.$eval('.style-number-font', (el) => {
-                const text = el.textContent.trim();
-                const match = text.match(/Style:\s*(\d+)/);
-                return match ? match[1] : null;
-            }).catch(() => null);
+            let sku = null;
+            try {
+                // Essayer d'extraire depuis .style-number-font
+                const skuText = await page.$eval('.style-number-font', (el) => {
+                    return el.textContent.trim();
+                }).catch(() => null);
+                
+                if (skuText) {
+                    const match = skuText.match(/Style:\s*(\d+)/);
+                    if (match) {
+                        sku = match[1];
+                    }
+                }
+                
+                // Si pas trouvé, essayer d'extraire depuis l'URL (le SKU est souvent dans l'URL)
+                if (!sku) {
+                    const urlMatch = url.match(/\/(\d+)$/);
+                    if (urlMatch) {
+                        sku = urlMatch[1];
+                    }
+                }
+            } catch (e) {
+                // Essayer d'extraire depuis l'URL en dernier recours
+                const urlMatch = url.match(/\/(\d+)$/);
+                if (urlMatch) {
+                    sku = urlMatch[1];
+                }
+            }
 
             // Extraire le nom du produit
             let name = null;
             try {
-                // Essayer d'abord avec le sélecteur spécifique
-                name = await page.$eval('format-text[text="prodDetails.productNameAttribute.displayValue"]', 
-                    (el) => el.textContent.trim()
-                );
+                // Essayer d'abord avec le sélecteur spécifique AngularJS
+                const nameElement = await page.$('format-text[text="prodDetails.productNameAttribute.displayValue"]');
+                if (nameElement) {
+                    name = await nameElement.textContent().then(t => t.trim());
+                }
             } catch (e) {
-                // Fallback: chercher dans d'autres sélecteurs
+                // Ignorer et essayer les fallbacks
+            }
+            
+            if (!name) {
                 try {
-                    name = await page.$eval('h5 format-text, h4 format-text, .product-name format-text', 
+                    // Chercher dans les éléments format-text
+                    name = await page.$eval('format-text.ng-binding', 
                         (el) => el.textContent.trim()
-                    );
+                    ).catch(() => null);
                 } catch (e2) {
-                    try {
-                        name = await page.$eval('h1, h2, h5, .product-name', 
-                            (el) => el.textContent.trim()
-                        );
-                    } catch (e3) {
-                        name = null;
-                    }
+                    // Ignorer
+                }
+            }
+            
+            if (!name) {
+                try {
+                    // Fallback: chercher dans les titres
+                    name = await page.$eval('h1, h2, h5, .product-name', 
+                        (el) => el.textContent.trim()
+                    ).catch(() => null);
+                } catch (e3) {
+                    name = null;
                 }
             }
 
@@ -224,32 +260,47 @@ const productCrawler = new PlaywrightCrawler({
             // Pour chaque couleur, simuler un clic et récupérer les images
             for (const color of colors) {
                 try {
-                    // Trouver tous les boutons de couleur
-                    const colorButtons = await page.$$('.color-tooltip .pdp-colors, .color-tooltip');
+                    // Trouver tous les boutons de couleur avec leurs titres
+                    const colorButtons = await page.$$('.color-tooltip');
                     
                     for (const button of colorButtons) {
                         try {
+                            // Extraire le titre de la couleur
                             const colorTitle = await button.$eval('.color-feature-title', 
                                 (el) => el.textContent.trim()
                             ).catch(() => null);
 
                             if (colorTitle === color) {
-                                // Faire défiler jusqu'au bouton pour s'assurer qu'il est visible
+                                // Faire défiler jusqu'au bouton
                                 await button.scrollIntoViewIfNeeded();
                                 await page.waitForTimeout(500);
                                 
-                                // Cliquer sur le bouton de couleur (utiliser le div cliquable)
-                                const clickableElement = await button.$('.pdp-colors') || button;
+                                // Trouver l'élément cliquable (pdp-colors ou le bouton lui-même)
+                                const clickableElement = await button.$('.pdp-colors').catch(() => button);
+                                
+                                // Cliquer sur l'élément
                                 await clickableElement.click({ force: true });
                                 
                                 // Attendre que les images se chargent (AngularJS met à jour le DOM)
                                 await page.waitForTimeout(2000);
                                 
                                 // Extraire les URLs des images après le clic
-                                const imageUrls = await page.$$eval('.preview-thumbnail img', (images) => {
+                                const imageUrls = await page.$$eval('.preview-thumbnail img, .product-image img, img[ng-src]', (images) => {
                                     return images.map(img => {
-                                        const src = img.getAttribute('src') || img.getAttribute('data-ng-src') || img.getAttribute('ng-src');
-                                        return src ? src.trim() : null;
+                                        const src = img.getAttribute('src') || 
+                                               img.getAttribute('data-ng-src') || 
+                                               img.getAttribute('ng-src') ||
+                                               img.getAttribute('data-src');
+                                        if (src && (src.includes('product') || src.includes('cdn'))) {
+                                            // Convertir les URLs relatives en absolues
+                                            if (src.startsWith('//')) {
+                                                return 'https:' + src;
+                                            } else if (src.startsWith('/')) {
+                                                return 'https://www.fruitoftheloom.eu' + src;
+                                            }
+                                            return src.trim();
+                                        }
+                                        return null;
                                     }).filter(Boolean);
                                 }).catch(() => []);
 
@@ -258,7 +309,7 @@ const productCrawler = new PlaywrightCrawler({
                                     console.log(`Images trouvées pour ${color}: ${imageUrls.length}`);
                                 }
                                 
-                                break;
+                                break; // Sortir de la boucle une fois la couleur trouvée
                             }
                         } catch (btnError) {
                             // Continuer avec le bouton suivant
@@ -272,16 +323,31 @@ const productCrawler = new PlaywrightCrawler({
 
             // Si aucune image n'a été trouvée par couleur, essayer de récupérer les images par défaut
             if (Object.keys(colorImages).length === 0) {
-                const defaultImages = await page.$$eval('.preview-thumbnail img', (images) => {
+                const defaultImages = await page.$$eval('.preview-thumbnail img, .product-image img, img[ng-src]', (images) => {
                     return images.map(img => {
-                        const src = img.getAttribute('src') || img.getAttribute('data-ng-src');
-                        return src ? src.trim() : null;
+                        const src = img.getAttribute('src') || 
+                                   img.getAttribute('data-ng-src') || 
+                                   img.getAttribute('ng-src') ||
+                                   img.getAttribute('data-src');
+                        if (src && (src.includes('product') || src.includes('cdn'))) {
+                            // Convertir les URLs relatives en absolues
+                            if (src.startsWith('//')) {
+                                return 'https:' + src;
+                            } else if (src.startsWith('/')) {
+                                return 'https://www.fruitoftheloom.eu' + src;
+                            }
+                            return src.trim();
+                        }
+                        return null;
                     }).filter(Boolean);
                 }).catch(() => []);
 
                 if (defaultImages.length > 0 && colors.length > 0) {
                     // Associer les images à la première couleur disponible
                     colorImages[colors[0]] = defaultImages;
+                } else if (defaultImages.length > 0) {
+                    // Si pas de couleurs mais des images, les associer à "Default"
+                    colorImages['Default'] = defaultImages;
                 }
             }
 
@@ -305,6 +371,30 @@ const productCrawler = new PlaywrightCrawler({
 
         } catch (error) {
             console.error(`Erreur lors du traitement du produit ${url}: ${error.message}`);
+            // Si c'est juste un timeout de sélecteur, essayer de sauvegarder ce qu'on a pu extraire
+            if (error.message.includes('Timeout') || error.message.includes('waitForSelector')) {
+                console.log(`Tentative de récupération des données partielles pour ${url}`);
+                // Essayer d'extraire au moins l'URL et la date
+                try {
+                    const partialData = {
+                        SKU: '',
+                        Name: '',
+                        Colors: '',
+                        Size: '',
+                        ColorImage: {},
+                        Category: '',
+                        URL: url,
+                        ScrapedAt: new Date().toISOString(),
+                        Error: error.message,
+                    };
+                    await Dataset.pushData(partialData);
+                    processedProducts.add(url);
+                    console.log(`Données partielles sauvegardées pour ${url}`);
+                } catch (saveError) {
+                    console.error(`Impossible de sauvegarder les données partielles: ${saveError.message}`);
+                }
+            }
+            // Relancer l'erreur pour que le crawler puisse réessayer
             throw error;
         }
     },
