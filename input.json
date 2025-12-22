@@ -10,6 +10,7 @@
   },
   "maxConcurrency": 5,
   "maxRequestRetries": 3,
-  "requestHandlerTimeoutSecs": 300
+  "requestHandlerTimeoutSecs": 300,
+  "maxProducts": 1
 }
 
