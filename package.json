@@ -1,0 +1,16 @@
+{
+  "name": "fruitoftheloom-scraper",
+  "version": "1.0.0",
+  "description": "Scraper optimisé pour le catalogue Fruit of the Loom avec rotating residential proxy",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "apify": "^3.0.0",
+    "crawlee": "^3.0.0",
+    "playwright": "^1.40.0"
+  },
+  "type": "module"
+}
+

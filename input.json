@@ -1,0 +1,15 @@
+{
+  "startUrls": [
+    {
+      "url": "https://www.fruitoftheloom.eu/shop/c?page=1"
+    }
+  ],
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  },
+  "maxConcurrency": 5,
+  "maxRequestRetries": 3,
+  "requestHandlerTimeoutSecs": 300
+}
+
