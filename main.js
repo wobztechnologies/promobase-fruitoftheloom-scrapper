@@ -60,15 +60,19 @@ const catalogCrawler = new PlaywrightCrawler({
         // Attendre que le contenu soit chargé
         try {
             await page.waitForSelector('.product-listing-desc, .pagination, a[href*="/shop/p/"]', { timeout: 30000 });
+            console.log('Sélecteur trouvé, contenu chargé');
         } catch (e) {
             console.log(`Erreur lors de l'attente du sélecteur: ${e.message}`);
-            // Prendre une capture d'écran pour déboguer
-            const title = await page.title().catch(() => 'Unknown');
-            console.log(`Titre de la page: ${title}`);
+            console.log('Tentative de continuer quand même...');
         }
         
         // Attendre que AngularJS charge le contenu
         await page.waitForTimeout(3000);
+        
+        // Vérifier le contenu de la page
+        const pageContent = await page.content().catch(() => '');
+        const hasProductLinks = pageContent.includes('/shop/p/') || pageContent.includes('product-listing');
+        console.log(`La page contient des liens produits: ${hasProductLinks}`);
 
         // Extraire toutes les URLs de produits de cette page avec plusieurs sélecteurs possibles
         const productLinks = await page.evaluate(() => {
@@ -108,14 +112,36 @@ const catalogCrawler = new PlaywrightCrawler({
         });
 
         console.log(`Nombre de liens produits trouvés: ${productLinks.length}`);
+        
+        if (productLinks.length > 0) {
+            console.log(`Premiers liens trouvés: ${productLinks.slice(0, 3).join(', ')}`);
+        } else {
+            console.log('Aucun lien produit trouvé. Vérification du DOM...');
+            // Essayer de voir ce qui est dans la page
+            const pageInfo = await page.evaluate(() => {
+                return {
+                    allLinks: document.querySelectorAll('a').length,
+                    productLinks: document.querySelectorAll('a[href*="/shop/p/"]').length,
+                    productListingDesc: document.querySelectorAll('.product-listing-desc').length,
+                    pagination: document.querySelectorAll('.pagination').length
+                };
+            });
+            console.log(`Informations de la page:`, JSON.stringify(pageInfo));
+        }
 
         // Ajouter les URLs de produits à la file d'attente
+        let addedCount = 0;
         for (const productUrl of productLinks) {
             if (!processedProducts.has(productUrl)) {
                 await productQueue.addRequest({ url: productUrl });
-                console.log(`URL produit ajoutée: ${productUrl}`);
+                processedProducts.add(productUrl); // Marquer comme traité pour éviter les doublons
+                addedCount++;
+                if (addedCount <= 3) {
+                    console.log(`URL produit ajoutée: ${productUrl}`);
+                }
             }
         }
+        console.log(`Total URLs produits ajoutées à la file d'attente: ${addedCount}`);
 
         // Gérer la pagination AngularJS
         try {
@@ -554,22 +580,31 @@ console.log(`URLs de départ: ${JSON.stringify(startUrls)}`);
 for (const startUrl of startUrls) {
     const urlToAdd = startUrl.url || startUrl;
     console.log(`Ajout de l'URL catalogue: ${urlToAdd}`);
-    const request = await catalogQueue.addRequest({ 
-        url: urlToAdd,
-        uniqueKey: urlToAdd
-    });
-    console.log(`Requête ajoutée avec ID: ${request.requestId}`);
+    try {
+        const request = await catalogQueue.addRequest({ 
+            url: urlToAdd,
+            uniqueKey: urlToAdd
+        });
+        console.log(`Requête ajoutée avec ID: ${request.requestId || 'N/A'}`);
+    } catch (error) {
+        console.error(`Erreur lors de l'ajout de la requête: ${error.message}`);
+    }
 }
 
 // Attendre un peu pour s'assurer que les requêtes sont bien enregistrées
-await new Promise(resolve => setTimeout(resolve, 1000));
+await new Promise(resolve => setTimeout(resolve, 2000));
 
 // Vérifier que les URLs ont été ajoutées
 const catalogQueueInfo = await catalogQueue.getInfo();
-console.log(`File d'attente catalogue - Requêtes en attente: ${catalogQueueInfo.pendingRequestCount || 0}, Total: ${catalogQueueInfo.totalRequestCount || 0}`);
+console.log(`File d'attente catalogue - Requêtes en attente: ${catalogQueueInfo.pendingRequestCount || 0}, Total: ${catalogQueueInfo.totalRequestCount || 0}, Traitées: ${catalogQueueInfo.handledRequestCount || 0}`);
 
-// D'abord, scraper les pages de catalogue pour collecter toutes les URLs de produits
-await catalogCrawler.run();
+if (catalogQueueInfo.pendingRequestCount === 0 && catalogQueueInfo.totalRequestCount === 0) {
+    console.error('ERREUR: Aucune requête dans la file d\'attente! Le crawler ne pourra pas fonctionner.');
+} else {
+    console.log('Démarrage du crawler catalogue...');
+    // D'abord, scraper les pages de catalogue pour collecter toutes les URLs de produits
+    await catalogCrawler.run();
+}
 
 console.log(`Nombre total d'URLs produits collectées: ${await productQueue.getInfo().then(info => info.pendingRequestCount || 0)}`);
 
