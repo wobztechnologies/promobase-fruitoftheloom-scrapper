@@ -4,8 +4,7 @@
   "description": "Scraper optimisé pour le catalogue Fruit of the Loom avec rotating residential proxy",
   "main": "main.js",
   "scripts": {
-    "start": "node main.js",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "start": "node main.js"
   },
   "dependencies": {
     "apify": "^3.0.0",
