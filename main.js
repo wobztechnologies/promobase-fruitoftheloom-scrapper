@@ -291,74 +291,72 @@ const productCrawler = new PlaywrightCrawler({
                                 // Cliquer sur l'élément
                                 await clickableElement.click({ force: true });
                                 
-                                // Attendre que les images se chargent (AngularJS met à jour le DOM)
-                                await page.waitForTimeout(2000);
+                                // Attendre que AngularJS mette à jour le DOM avec les nouvelles images
+                                await page.waitForTimeout(3000);
                                 
-                                // Extraire UNIQUEMENT les images actives/visibles après le clic sur cette couleur
-                                // On capture un snapshot des images visibles AVANT et APRÈS le clic pour comparer
+                                // Attendre que le conteneur preview-thumbnail soit visible et contienne des images
+                                try {
+                                    await page.waitForSelector('ul.preview-thumbnail:not([style*="display: none"])', { 
+                                        timeout: 5000,
+                                        state: 'visible' 
+                                    });
+                                } catch (e) {
+                                    console.log(`Le conteneur preview-thumbnail n'est pas visible pour ${color}`);
+                                }
+                                
+                                // Extraire UNIQUEMENT les images dans ul.preview-thumbnail après le clic sur cette couleur
                                 const imageUrls = await page.evaluate(() => {
                                     const images = [];
                                     
-                                    // Chercher dans tous les conteneurs d'images possibles
-                                    const containers = [
-                                        '.preview-thumbnail',
-                                        '.product-image',
-                                        '.pdp-image',
-                                        '.main-product-image',
-                                        '.product-images',
-                                        '[ng-repeat*="image"]',
-                                        '[ng-repeat*="Image"]'
-                                    ];
+                                    // Chercher UNIQUEMENT dans ul.preview-thumbnail
+                                    const previewThumbnail = document.querySelector('ul.preview-thumbnail');
                                     
-                                    containers.forEach(selector => {
-                                        const elements = document.querySelectorAll(selector);
-                                        elements.forEach(container => {
-                                            // Vérifier que le conteneur est visible
-                                            const containerStyle = window.getComputedStyle(container);
-                                            if (containerStyle.display === 'none' || containerStyle.visibility === 'hidden') {
-                                                return;
+                                    if (!previewThumbnail) {
+                                        return images;
+                                    }
+                                    
+                                    // Vérifier que le conteneur est visible
+                                    const containerStyle = window.getComputedStyle(previewThumbnail);
+                                    if (containerStyle.display === 'none' || containerStyle.visibility === 'hidden') {
+                                        return images;
+                                    }
+                                    
+                                    // Chercher toutes les images dans les li.preview-image
+                                    const listItems = previewThumbnail.querySelectorAll('li.preview-image');
+                                    
+                                    listItems.forEach(li => {
+                                        const img = li.querySelector('img');
+                                        if (!img) {
+                                            return;
+                                        }
+                                        
+                                        // Vérifier que l'image est visible
+                                        const imgStyle = window.getComputedStyle(img);
+                                        if (imgStyle.display === 'none' || 
+                                            imgStyle.visibility === 'hidden' || 
+                                            parseFloat(imgStyle.opacity) < 0.1) {
+                                            return;
+                                        }
+                                        
+                                        // Extraire l'URL de l'image
+                                        const src = img.getAttribute('src') || 
+                                                   img.getAttribute('data-ng-src') || 
+                                                   img.getAttribute('ng-src') ||
+                                                   img.getAttribute('data-src');
+                                        
+                                        if (src && (src.includes('product') || src.includes('cdn'))) {
+                                            let fullUrl = src;
+                                            if (src.startsWith('//')) {
+                                                fullUrl = 'https:' + src;
+                                            } else if (src.startsWith('/')) {
+                                                fullUrl = 'https://www.fruitoftheloom.eu' + src;
                                             }
                                             
-                                            // Chercher les images dans ce conteneur
-                                            const imgs = container.querySelectorAll('img');
-                                            imgs.forEach(img => {
-                                                // Vérifier que l'image est visible
-                                                const imgStyle = window.getComputedStyle(img);
-                                                if (imgStyle.display === 'none' || 
-                                                    imgStyle.visibility === 'hidden' || 
-                                                    parseFloat(imgStyle.opacity) < 0.1) {
-                                                    return;
-                                                }
-                                                
-                                                // Vérifier que l'image est dans le viewport ou proche
-                                                const rect = img.getBoundingClientRect();
-                                                const isVisible = rect.width > 0 && rect.height > 0 && 
-                                                               (rect.top < window.innerHeight + 500 && rect.bottom > -500);
-                                                
-                                                if (!isVisible) {
-                                                    return;
-                                                }
-                                                
-                                                const src = img.getAttribute('src') || 
-                                                           img.getAttribute('data-ng-src') || 
-                                                           img.getAttribute('ng-src') ||
-                                                           img.getAttribute('data-src');
-                                                
-                                                if (src && (src.includes('product') || src.includes('cdn'))) {
-                                                    let fullUrl = src;
-                                                    if (src.startsWith('//')) {
-                                                        fullUrl = 'https:' + src;
-                                                    } else if (src.startsWith('/')) {
-                                                        fullUrl = 'https://www.fruitoftheloom.eu' + src;
-                                                    }
-                                                    
-                                                    // Éviter les doublons
-                                                    if (!images.includes(fullUrl.trim())) {
-                                                        images.push(fullUrl.trim());
-                                                    }
-                                                }
-                                            });
-                                        });
+                                            // Éviter les doublons
+                                            if (!images.includes(fullUrl.trim())) {
+                                                images.push(fullUrl.trim());
+                                            }
+                                        }
                                     });
                                     
                                     return images;
@@ -383,25 +381,61 @@ const productCrawler = new PlaywrightCrawler({
                 }
             }
 
-            // Si aucune image n'a été trouvée par couleur, essayer de récupérer les images par défaut
+            // Si aucune image n'a été trouvée par couleur, essayer de récupérer les images par défaut depuis preview-thumbnail
             if (Object.keys(colorImages).length === 0) {
-                const defaultImages = await page.$$eval('.preview-thumbnail img, .product-image img, img[ng-src]', (images) => {
-                    return images.map(img => {
+                const defaultImages = await page.evaluate(() => {
+                    const images = [];
+                    
+                    // Chercher UNIQUEMENT dans ul.preview-thumbnail
+                    const previewThumbnail = document.querySelector('ul.preview-thumbnail');
+                    
+                    if (!previewThumbnail) {
+                        return images;
+                    }
+                    
+                    // Vérifier que le conteneur est visible
+                    const containerStyle = window.getComputedStyle(previewThumbnail);
+                    if (containerStyle.display === 'none' || containerStyle.visibility === 'hidden') {
+                        return images;
+                    }
+                    
+                    // Chercher toutes les images dans les li.preview-image
+                    const listItems = previewThumbnail.querySelectorAll('li.preview-image');
+                    
+                    listItems.forEach(li => {
+                        const img = li.querySelector('img');
+                        if (!img) {
+                            return;
+                        }
+                        
+                        // Vérifier que l'image est visible
+                        const imgStyle = window.getComputedStyle(img);
+                        if (imgStyle.display === 'none' || 
+                            imgStyle.visibility === 'hidden' || 
+                            parseFloat(imgStyle.opacity) < 0.1) {
+                            return;
+                        }
+                        
                         const src = img.getAttribute('src') || 
                                    img.getAttribute('data-ng-src') || 
                                    img.getAttribute('ng-src') ||
                                    img.getAttribute('data-src');
+                        
                         if (src && (src.includes('product') || src.includes('cdn'))) {
-                            // Convertir les URLs relatives en absolues
+                            let fullUrl = src;
                             if (src.startsWith('//')) {
-                                return 'https:' + src;
+                                fullUrl = 'https:' + src;
                             } else if (src.startsWith('/')) {
-                                return 'https://www.fruitoftheloom.eu' + src;
+                                fullUrl = 'https://www.fruitoftheloom.eu' + src;
                             }
-                            return src.trim();
+                            
+                            if (!images.includes(fullUrl.trim())) {
+                                images.push(fullUrl.trim());
+                            }
                         }
-                        return null;
-                    }).filter(Boolean);
+                    });
+                    
+                    return images;
                 }).catch(() => []);
 
                 if (defaultImages.length > 0 && colors.length > 0) {
@@ -414,12 +448,13 @@ const productCrawler = new PlaywrightCrawler({
             }
 
             // Formater les données du produit
+            // Convertir ColorImage en JSON string pour qu'il soit dans une seule colonne
             const productData = {
                 SKU: sku || '',
                 Name: name || '',
                 Colors: colors.join(';'),
                 Size: sizes.join(';'),
-                ColorImage: colorImages,
+                ColorImage: JSON.stringify(colorImages), // Convertir l'objet en JSON string pour une seule colonne
                 Category: category || '',
                 URL: url,
                 ScrapedAt: new Date().toISOString(),
@@ -449,7 +484,7 @@ const productCrawler = new PlaywrightCrawler({
                         Name: '',
                         Colors: '',
                         Size: '',
-                        ColorImage: {},
+                        ColorImage: JSON.stringify({}), // Convertir en JSON string pour une seule colonne
                         Category: '',
                         URL: url,
                         ScrapedAt: new Date().toISOString(),
