@@ -130,15 +130,23 @@ const catalogCrawler = new PlaywrightCrawler({
         }
 
         // Ajouter les URLs de produits à la file d'attente
+        // NE PAS les ajouter à processedProducts ici - elles seront marquées comme traitées
+        // seulement après avoir été réellement scrapées par le productCrawler
         let addedCount = 0;
         for (const productUrl of productLinks) {
+            // Vérifier si l'URL n'est pas déjà dans la file d'attente ou déjà traitée
             if (!processedProducts.has(productUrl)) {
-                await productQueue.addRequest({ url: productUrl });
-                processedProducts.add(productUrl); // Marquer comme traité pour éviter les doublons
-                addedCount++;
-                if (addedCount <= 3) {
-                    console.log(`URL produit ajoutée: ${productUrl}`);
+                try {
+                    await productQueue.addRequest({ url: productUrl });
+                    addedCount++;
+                    if (addedCount <= 3) {
+                        console.log(`URL produit ajoutée: ${productUrl}`);
+                    }
+                } catch (error) {
+                    console.log(`Erreur lors de l'ajout de l'URL produit ${productUrl}: ${error.message}`);
                 }
+            } else {
+                console.log(`URL produit déjà traitée ou en cours: ${productUrl}`);
             }
         }
         console.log(`Total URLs produits ajoutées à la file d'attente: ${addedCount}`);
@@ -606,10 +614,18 @@ if (catalogQueueInfo.pendingRequestCount === 0 && catalogQueueInfo.totalRequestC
     await catalogCrawler.run();
 }
 
-console.log(`Nombre total d'URLs produits collectées: ${await productQueue.getInfo().then(info => info.pendingRequestCount || 0)}`);
+// Vérifier l'état de la file d'attente des produits
+const productQueueInfo = await productQueue.getInfo();
+console.log(`File d'attente produits - Requêtes en attente: ${productQueueInfo.pendingRequestCount || 0}, Total: ${productQueueInfo.totalRequestCount || 0}, Traitées: ${productQueueInfo.handledRequestCount || 0}`);
 
-// Ensuite, scraper toutes les pages produits
-await productCrawler.run();
+if (productQueueInfo.pendingRequestCount === 0 && productQueueInfo.totalRequestCount === 0) {
+    console.warn('ATTENTION: Aucune URL produit dans la file d\'attente. Le crawler produit ne pourra pas fonctionner.');
+    console.log('Vérification: Est-ce que le crawler catalogue a bien trouvé des liens produits?');
+} else {
+    console.log(`Démarrage du crawler produit avec ${productQueueInfo.pendingRequestCount || 0} requêtes en attente...`);
+    // Ensuite, scraper toutes les pages produits
+    await productCrawler.run();
+}
 
 console.log('Scraping terminé!');
 
