@@ -46,33 +46,74 @@ const catalogCrawler = new PlaywrightCrawler({
         const url = request.url;
         
         if (processedCatalogPages.has(url)) {
+            console.log(`Page catalogue déjà traitée: ${url}`);
             return;
         }
         
         console.log(`Traitement de la page catalogue: ${url}`);
         processedCatalogPages.add(url);
+        
+        // La page est déjà chargée par PlaywrightCrawler
+        const pageTitle = await page.title().catch(() => 'Unknown');
+        console.log(`Titre de la page: ${pageTitle}`);
 
         // Attendre que le contenu soit chargé
-        await page.waitForSelector('.product-listing-desc, .pagination', { timeout: 30000 });
+        try {
+            await page.waitForSelector('.product-listing-desc, .pagination, a[href*="/shop/p/"]', { timeout: 30000 });
+        } catch (e) {
+            console.log(`Erreur lors de l'attente du sélecteur: ${e.message}`);
+            // Prendre une capture d'écran pour déboguer
+            const title = await page.title().catch(() => 'Unknown');
+            console.log(`Titre de la page: ${title}`);
+        }
         
         // Attendre que AngularJS charge le contenu
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(3000);
 
-        // Extraire toutes les URLs de produits de cette page
-        const productLinks = await page.$$eval('a.product-listing-desc', (links) => {
-            return links.map(link => {
-                const href = link.getAttribute('href') || link.getAttribute('ng-href');
-                if (href && href.startsWith('/shop/p/')) {
-                    return `https://www.fruitoftheloom.eu${href}`;
-                }
-                return null;
-            }).filter(Boolean);
+        // Extraire toutes les URLs de produits de cette page avec plusieurs sélecteurs possibles
+        const productLinks = await page.evaluate(() => {
+            const links = [];
+            
+            // Essayer plusieurs sélecteurs possibles
+            const selectors = [
+                'a.product-listing-desc',
+                'a[href*="/shop/p/"]',
+                'a[ng-href*="/shop/p/"]',
+                '.product-listing-desc a',
+                '.product-item a',
+                'a[href^="/shop/p/"]'
+            ];
+            
+            for (const selector of selectors) {
+                const elements = document.querySelectorAll(selector);
+                elements.forEach(link => {
+                    const href = link.getAttribute('href') || link.getAttribute('ng-href');
+                    if (href && (href.includes('/shop/p/') || href.startsWith('/shop/p/'))) {
+                        let fullUrl = href;
+                        if (href.startsWith('/')) {
+                            fullUrl = `https://www.fruitoftheloom.eu${href}`;
+                        } else if (!href.startsWith('http')) {
+                            fullUrl = `https://www.fruitoftheloom.eu/${href}`;
+                        }
+                        
+                        // Éviter les doublons
+                        if (!links.includes(fullUrl)) {
+                            links.push(fullUrl);
+                        }
+                    }
+                });
+            }
+            
+            return links;
         });
+
+        console.log(`Nombre de liens produits trouvés: ${productLinks.length}`);
 
         // Ajouter les URLs de produits à la file d'attente
         for (const productUrl of productLinks) {
             if (!processedProducts.has(productUrl)) {
                 await productQueue.addRequest({ url: productUrl });
+                console.log(`URL produit ajoutée: ${productUrl}`);
             }
         }
 
