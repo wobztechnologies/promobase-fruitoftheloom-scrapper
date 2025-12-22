@@ -550,16 +550,23 @@ const productCrawler = new PlaywrightCrawler({
 console.log('Démarrage du scraping...');
 console.log(`URLs de départ: ${JSON.stringify(startUrls)}`);
 
-// Ajouter les URLs de départ à la file d'attente du catalogue
+// Ajouter les URLs de départ à la file d'attente du catalogue AVANT de démarrer le crawler
 for (const startUrl of startUrls) {
     const urlToAdd = startUrl.url || startUrl;
     console.log(`Ajout de l'URL catalogue: ${urlToAdd}`);
-    await catalogQueue.addRequest({ url: urlToAdd });
+    const request = await catalogQueue.addRequest({ 
+        url: urlToAdd,
+        uniqueKey: urlToAdd
+    });
+    console.log(`Requête ajoutée avec ID: ${request.requestId}`);
 }
+
+// Attendre un peu pour s'assurer que les requêtes sont bien enregistrées
+await new Promise(resolve => setTimeout(resolve, 1000));
 
 // Vérifier que les URLs ont été ajoutées
 const catalogQueueInfo = await catalogQueue.getInfo();
-console.log(`File d'attente catalogue - Requêtes en attente: ${catalogQueueInfo.pendingRequestCount || 0}`);
+console.log(`File d'attente catalogue - Requêtes en attente: ${catalogQueueInfo.pendingRequestCount || 0}, Total: ${catalogQueueInfo.totalRequestCount || 0}`);
 
 // D'abord, scraper les pages de catalogue pour collecter toutes les URLs de produits
 await catalogCrawler.run();
