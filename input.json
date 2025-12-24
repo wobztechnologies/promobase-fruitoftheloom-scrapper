@@ -1,16 +1,15 @@
 {
   "startUrls": [
     {
-      "url": "https://www.fruitoftheloom.eu/shop/c?page=1"
+      "url": "https://www.fruitoftheloom.eu/shop/c/Fruit-Europe"
     }
   ],
   "proxyConfiguration": {
     "useApifyProxy": true,
     "apifyProxyGroups": ["RESIDENTIAL"]
   },
-  "maxConcurrency": 5,
+  "maxConcurrency": 3,
   "maxRequestRetries": 3,
-  "requestHandlerTimeoutSecs": 300,
-  "maxProducts": 1
+  "maxProducts": null
 }
 

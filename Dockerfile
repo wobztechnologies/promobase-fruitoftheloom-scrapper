@@ -1,4 +1,4 @@
-FROM apify/actor-node-playwright-chrome:20
+FROM apify/actor-node-puppeteer-chrome:20
 
 # Copier les fichiers du projet
 COPY . ./

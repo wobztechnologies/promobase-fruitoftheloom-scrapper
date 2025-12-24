@@ -1,21 +1,37 @@
 import { Actor } from 'apify';
-import { PlaywrightCrawler, Dataset, RequestQueue } from 'crawlee';
+import { PuppeteerCrawler, Dataset, RequestQueue } from 'crawlee';
 
 await Actor.init();
 
 const {
-    startUrls = [{ url: 'https://www.fruitoftheloom.eu/shop/c?page=1' }],
+    startUrls = [{ url: 'https://www.fruitoftheloom.eu/shop/c/Fruit-Europe' }],
     proxyConfiguration = {
         useApifyProxy: true,
         apifyProxyGroups: ['RESIDENTIAL'],
     },
-    maxConcurrency = 5,
+    maxConcurrency = 3,
     maxRequestRetries = 3,
-    maxProducts = 1, // Limiter à 1 produit pour les tests
+    maxProducts = null, // null = tous les produits
 } = await Actor.getInput() || {};
 
 // Configuration du proxy rotatif résidentiel
 const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
+
+// Liste des user agents réalistes pour rotation
+const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+];
+
+// Fonction pour obtenir un user agent aléatoire
+const getRandomUserAgent = () => userAgents[Math.floor(Math.random() * userAgents.length)];
+
+// Fonction pour délai aléatoire
+const randomDelay = (min = 2000, max = 5000) => 
+    Math.floor(Math.random() * (max - min + 1)) + min;
 
 // Créer les files d'attente
 const catalogQueue = await RequestQueue.open('catalog');
@@ -28,19 +44,45 @@ const processedProducts = new Set();
 // Compteur pour limiter le nombre de produits traités
 let productsProcessedCount = 0;
 
-// Crawler pour les pages de catalogue (extraction des URLs produits)
-const catalogCrawler = new PlaywrightCrawler({
+// ============================================================================
+// ACTEUR 1: Extraction des URLs de produits
+// ============================================================================
+
+const catalogCrawler = new PuppeteerCrawler({
     proxyConfiguration: proxyConfig,
-    maxConcurrency,
+    maxConcurrency: 1, // Limiter à 1 pour éviter la détection
     maxRequestRetries,
     requestHandlerTimeoutSecs: 300,
-    useSessionPool: true,
-    sessionPoolOptions: {
-        sessionOptions: {
-            maxUsageCount: 5,
-            maxErrorScore: 1,
+    
+    launchContext: {
+        launchOptions: {
+            headless: true,
+            ignoreHTTPSErrors: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+            ],
         },
     },
+    
+    preNavigationHooks: [
+        async ({ page, request }) => {
+            // Définir un user agent aléatoire
+            await page.setUserAgent(getRandomUserAgent());
+            
+            // Définir des en-têtes réalistes
+            await page.setExtraHTTPHeaders({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            });
+        },
+    ],
     
     async requestHandler({ page, request }) {
         const url = request.url;
@@ -53,42 +95,128 @@ const catalogCrawler = new PlaywrightCrawler({
         console.log(`Traitement de la page catalogue: ${url}`);
         processedCatalogPages.add(url);
         
-        // La page est déjà chargée par PlaywrightCrawler
-        const pageTitle = await page.title().catch(() => 'Unknown');
-        console.log(`Titre de la page: ${pageTitle}`);
-
+        // Délai aléatoire avant de charger la page
+        await page.waitForTimeout(randomDelay(1000, 2000));
+        
         // Attendre que le contenu soit chargé
         try {
-            await page.waitForSelector('.product-listing-desc, .pagination, a[href*="/shop/p/"]', { timeout: 30000 });
-            console.log('Sélecteur trouvé, contenu chargé');
+            await page.waitForSelector('.product-listing-desc, .pagination, a[href*="/shop/p/"]', { 
+                timeout: 30000 
+            });
         } catch (e) {
             console.log(`Erreur lors de l'attente du sélecteur: ${e.message}`);
-            console.log('Tentative de continuer quand même...');
         }
         
         // Attendre que AngularJS charge le contenu
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(randomDelay(2000, 3000));
         
-        // Vérifier le contenu de la page
-        const pageContent = await page.content().catch(() => '');
-        const hasProductLinks = pageContent.includes('/shop/p/') || pageContent.includes('product-listing');
-        console.log(`La page contient des liens produits: ${hasProductLinks}`);
-
-        // Extraire toutes les URLs de produits de cette page avec plusieurs sélecteurs possibles
-        const productLinks = await page.evaluate(() => {
-            const links = [];
+        // Simuler un défilement humain
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 100;
+                const timer = setInterval(() => {
+                    const scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    
+                    if (totalHeight >= scrollHeight) {
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        });
+        
+        await page.waitForTimeout(randomDelay(1000, 2000));
+        
+        // Gérer le bouton "Load More" s'il existe
+        let loadMoreClicked = true;
+        let loadMoreAttempts = 0;
+        const maxLoadMoreAttempts = 50; // Limite de sécurité
+        
+        while (loadMoreClicked && loadMoreAttempts < maxLoadMoreAttempts) {
+            loadMoreClicked = false;
+            loadMoreAttempts++;
             
-            // Essayer plusieurs sélecteurs possibles
+            // Chercher différents sélecteurs possibles pour "Load More"
+            const loadMoreSelectors = [
+                'button:contains("Load More")',
+                'button:contains("Show More")',
+                'a:contains("Load More")',
+                '.btn-load-more',
+                '.load-more',
+                'button[class*="load"]',
+                'a[class*="load-more"]',
+            ];
+            
+            for (const selector of loadMoreSelectors) {
+                try {
+                    // Essayer de trouver le bouton avec différents sélecteurs
+                    const loadMoreButton = await page.evaluate((sel) => {
+                        // Chercher par texte
+                        const buttons = Array.from(document.querySelectorAll('button, a'));
+                        const found = buttons.find(btn => 
+                            btn.textContent.toLowerCase().includes('load more') ||
+                            btn.textContent.toLowerCase().includes('show more') ||
+                            btn.textContent.toLowerCase().includes('voir plus')
+                        );
+                        return found ? true : false;
+                    });
+                    
+                    if (loadMoreButton) {
+                        // Cliquer sur le bouton
+                        await page.evaluate(() => {
+                            const buttons = Array.from(document.querySelectorAll('button, a'));
+                            const btn = buttons.find(b => 
+                                b.textContent.toLowerCase().includes('load more') ||
+                                b.textContent.toLowerCase().includes('show more') ||
+                                b.textContent.toLowerCase().includes('voir plus')
+                            );
+                            if (btn) {
+                                btn.click();
+                                return true;
+                            }
+                            return false;
+                        });
+                        
+                        loadMoreClicked = true;
+                        console.log(`Bouton "Load More" cliqué (tentative ${loadMoreAttempts})`);
+                        
+                        // Attendre que de nouveaux produits apparaissent
+                        await page.waitForTimeout(randomDelay(2000, 4000));
+                        
+                        // Vérifier si de nouveaux éléments sont apparus
+                        const newProducts = await page.evaluate(() => {
+                            return document.querySelectorAll('a.product-listing-desc, a[href*="/shop/p/"]').length;
+                        });
+                        
+                        console.log(`Produits visibles après clic: ${newProducts}`);
+                        break;
+                    }
+                } catch (error) {
+                    // Continuer avec le sélecteur suivant
+                }
+            }
+            
+            // Si aucun bouton trouvé, arrêter
+            if (!loadMoreClicked) {
+                break;
+            }
+        }
+        
+        // Extraire toutes les URLs de produits de cette page
+        const productLinks = await page.evaluate(() => {
+            const links = new Set();
+            
+            // Chercher avec plusieurs sélecteurs
             const selectors = [
                 'a.product-listing-desc',
                 'a[href*="/shop/p/"]',
                 'a[ng-href*="/shop/p/"]',
-                '.product-listing-desc a',
-                '.product-item a',
-                'a[href^="/shop/p/"]'
             ];
             
-            for (const selector of selectors) {
+            selectors.forEach(selector => {
                 const elements = document.querySelectorAll(selector);
                 elements.forEach(link => {
                     const href = link.getAttribute('href') || link.getAttribute('ng-href');
@@ -99,80 +227,42 @@ const catalogCrawler = new PlaywrightCrawler({
                         } else if (!href.startsWith('http')) {
                             fullUrl = `https://www.fruitoftheloom.eu/${href}`;
                         }
-                        
-                        // Éviter les doublons
-                        if (!links.includes(fullUrl)) {
-                            links.push(fullUrl);
-                        }
+                        links.add(fullUrl);
                     }
                 });
-            }
+            });
             
-            return links;
+            return Array.from(links);
         });
-
+        
         console.log(`Nombre de liens produits trouvés: ${productLinks.length}`);
         
-        if (productLinks.length > 0) {
-            console.log(`Premiers liens trouvés: ${productLinks.slice(0, 3).join(', ')}`);
-        } else {
-            console.log('Aucun lien produit trouvé. Vérification du DOM...');
-            // Essayer de voir ce qui est dans la page
-            const pageInfo = await page.evaluate(() => {
-                return {
-                    allLinks: document.querySelectorAll('a').length,
-                    productLinks: document.querySelectorAll('a[href*="/shop/p/"]').length,
-                    productListingDesc: document.querySelectorAll('.product-listing-desc').length,
-                    pagination: document.querySelectorAll('.pagination').length
-                };
-            });
-            console.log(`Informations de la page:`, JSON.stringify(pageInfo));
-        }
-
         // Ajouter les URLs de produits à la file d'attente
-        // NE PAS les ajouter à processedProducts ici - elles seront marquées comme traitées
-        // seulement après avoir été réellement scrapées par le productCrawler
-        let addedCount = 0;
         for (const productUrl of productLinks) {
-            // Vérifier si l'URL n'est pas déjà dans la file d'attente ou déjà traitée
             if (!processedProducts.has(productUrl)) {
-                try {
-                    await productQueue.addRequest({ url: productUrl });
-                    addedCount++;
-                    if (addedCount <= 3) {
-                        console.log(`URL produit ajoutée: ${productUrl}`);
-                    }
-                } catch (error) {
-                    console.log(`Erreur lors de l'ajout de l'URL produit ${productUrl}: ${error.message}`);
-                }
-            } else {
-                console.log(`URL produit déjà traitée ou en cours: ${productUrl}`);
+                await productQueue.addRequest({ url: productUrl });
+                processedProducts.add(productUrl);
             }
         }
-        console.log(`Total URLs produits ajoutées à la file d'attente: ${addedCount}`);
-
-        // Gérer la pagination AngularJS
+        
+        // Gérer la pagination normale (si pas de Load More)
         try {
-            // Extraire le numéro de page actuel depuis l'URL
             const currentPageMatch = url.match(/[?&]page=(\d+)/);
             const currentPage = currentPageMatch ? parseInt(currentPageMatch[1]) : 1;
             
-            // Construire l'URL de base
             const urlObj = new URL(url);
-            const baseUrl = `${urlObj.origin}${urlObj.pathname}`;
             
-            // Extraire tous les numéros de page visibles dans la pagination
-            const pageNumbers = await page.$$eval('li.pagination-page a', (links) => {
+            // Extraire les numéros de page visibles
+            const pageNumbers = await page.evaluate(() => {
+                const links = Array.from(document.querySelectorAll('li.pagination-page a'));
                 return links.map(link => {
                     const text = link.textContent.trim();
-                    if (!isNaN(parseInt(text))) {
-                        return parseInt(text);
-                    }
-                    return null;
+                    const num = parseInt(text);
+                    return isNaN(num) ? null : num;
                 }).filter(Boolean);
             });
-
-            // Construire les URLs pour chaque page visible
+            
+            // Ajouter les pages suivantes
             for (const pageNum of pageNumbers) {
                 urlObj.searchParams.set('page', pageNum.toString());
                 const pageUrl = urlObj.toString();
@@ -182,10 +272,9 @@ const catalogCrawler = new PlaywrightCrawler({
                 }
             }
             
-            // Vérifier s'il y a une page suivante disponible
+            // Vérifier s'il y a une page suivante
             const nextButton = await page.$('li.pagination-next:not(.disabled)');
             if (nextButton) {
-                // Essayer de trouver le numéro de la dernière page visible
                 const maxVisiblePage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : currentPage;
                 const nextPage = maxVisiblePage + 1;
                 
@@ -199,116 +288,147 @@ const catalogCrawler = new PlaywrightCrawler({
         } catch (error) {
             console.log(`Erreur lors de l'extraction de la pagination: ${error.message}`);
         }
+        
+        // Délai aléatoire après traitement
+        await page.waitForTimeout(randomDelay(2000, 4000));
     },
     
     requestQueue: catalogQueue,
 });
 
-// Crawler pour les pages produits individuelles
-const productCrawler = new PlaywrightCrawler({
+// ============================================================================
+// ACTEUR 2: Scraping des pages produits avec interactions de couleurs
+// ============================================================================
+
+const productCrawler = new PuppeteerCrawler({
     proxyConfiguration: proxyConfig,
-    maxConcurrency: 3, // Moins de concurrence pour les pages produits (plus complexes)
+    maxConcurrency: maxConcurrency,
     maxRequestRetries,
     requestHandlerTimeoutSecs: 300,
-    useSessionPool: true,
-    sessionPoolOptions: {
-        sessionOptions: {
-            maxUsageCount: 3,
-            maxErrorScore: 1,
+    
+    launchContext: {
+        launchOptions: {
+            headless: true,
+            ignoreHTTPSErrors: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+            ],
         },
     },
+    
+    preNavigationHooks: [
+        async ({ page, request }) => {
+            await page.setUserAgent(getRandomUserAgent());
+            await page.setExtraHTTPHeaders({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            });
+        },
+    ],
     
     async requestHandler({ page, request }) {
         const url = request.url;
         
         // Vérifier la limite de produits
-        if (productsProcessedCount >= maxProducts) {
-            console.log(`Limite de ${maxProducts} produit(s) atteinte. Arrêt du traitement.`);
+        if (maxProducts && productsProcessedCount >= maxProducts) {
+            console.log(`Limite de ${maxProducts} produit(s) atteinte.`);
             return;
         }
         
-        // Éviter de traiter les mêmes produits plusieurs fois
         if (processedProducts.has(url)) {
             console.log(`Produit déjà traité: ${url}`);
             return;
         }
-
-        console.log(`Traitement du produit: ${url} (${productsProcessedCount + 1}/${maxProducts})`);
-
+        
+        console.log(`Traitement du produit: ${url} (${productsProcessedCount + 1}${maxProducts ? `/${maxProducts}` : ''})`);
+        
         try {
-            // Attendre que la page soit chargée - attendre que les éléments soient attachés au DOM (pas nécessairement visibles)
+            // Délai aléatoire avant de charger
+            await page.waitForTimeout(randomDelay(1000, 2000));
+            
+            // Attendre que la page soit chargée
             await page.waitForSelector('.style-number-font, format-text', { 
                 timeout: 30000,
-                state: 'attached' // Attendre que l'élément soit attaché au DOM, pas nécessairement visible
+                state: 'attached'
             });
             
-            // Attendre un peu pour que AngularJS charge le contenu
-            await page.waitForTimeout(2000);
-
+            await page.waitForTimeout(randomDelay(2000, 3000));
+            
+            // Simuler un défilement
+            await page.evaluate(async () => {
+                await new Promise((resolve) => {
+                    let totalHeight = 0;
+                    const distance = 100;
+                    const timer = setInterval(() => {
+                        const scrollHeight = document.body.scrollHeight;
+                        window.scrollBy(0, distance);
+                        totalHeight += distance;
+                        
+                        if (totalHeight >= scrollHeight) {
+                            clearInterval(timer);
+                            resolve();
+                        }
+                    }, 100);
+                });
+            });
+            
+            await page.waitForTimeout(randomDelay(1000, 2000));
+            
             // Extraire le SKU
             let sku = null;
             try {
-                // Essayer d'extraire depuis .style-number-font
                 const skuText = await page.$eval('.style-number-font', (el) => {
                     return el.textContent.trim();
                 }).catch(() => null);
                 
                 if (skuText) {
                     const match = skuText.match(/Style:\s*(\d+)/);
-                    if (match) {
-                        sku = match[1];
-                    }
+                    if (match) sku = match[1];
                 }
                 
-                // Si pas trouvé, essayer d'extraire depuis l'URL (le SKU est souvent dans l'URL)
                 if (!sku) {
                     const urlMatch = url.match(/\/(\d+)$/);
-                    if (urlMatch) {
-                        sku = urlMatch[1];
-                    }
+                    if (urlMatch) sku = urlMatch[1];
                 }
             } catch (e) {
-                // Essayer d'extraire depuis l'URL en dernier recours
                 const urlMatch = url.match(/\/(\d+)$/);
-                if (urlMatch) {
-                    sku = urlMatch[1];
-                }
+                if (urlMatch) sku = urlMatch[1];
             }
-
+            
             // Extraire le nom du produit
             let name = null;
             try {
-                // Essayer d'abord avec le sélecteur spécifique AngularJS
                 const nameElement = await page.$('format-text[text="prodDetails.productNameAttribute.displayValue"]');
                 if (nameElement) {
-                    name = await nameElement.textContent().then(t => t.trim());
+                    name = await nameElement.evaluate(el => el.textContent.trim());
                 }
-            } catch (e) {
-                // Ignorer et essayer les fallbacks
-            }
+            } catch (e) {}
             
             if (!name) {
                 try {
-                    // Chercher dans les éléments format-text
                     name = await page.$eval('format-text.ng-binding', 
-                        (el) => el.textContent.trim()
+                        el => el.textContent.trim()
                     ).catch(() => null);
-                } catch (e2) {
-                    // Ignorer
-                }
+                } catch (e) {}
             }
             
             if (!name) {
                 try {
-                    // Fallback: chercher dans les titres
                     name = await page.$eval('h1, h2, h5, .product-name', 
-                        (el) => el.textContent.trim()
+                        el => el.textContent.trim()
                     ).catch(() => null);
-                } catch (e3) {
+                } catch (e) {
                     name = null;
                 }
             }
-
+            
             // Extraire la catégorie
             const category = await page.$eval('a[ng-href^="c/"]', (el) => {
                 const href = el.getAttribute('href') || el.getAttribute('ng-href');
@@ -318,12 +438,12 @@ const productCrawler = new PlaywrightCrawler({
                 }
                 return el.textContent.trim();
             }).catch(() => null);
-
-            // Extraire les couleurs
+            
+            // Extraire les couleurs disponibles
             const colors = await page.$$eval('.color-tooltip .color-feature-title', (elements) => {
                 return elements.map(el => el.textContent.trim()).filter(Boolean);
             }).catch(() => []);
-
+            
             // Extraire les tailles
             const sizes = await page.$$eval('.details.sizes span.ng-binding', (elements) => {
                 const sizeList = [];
@@ -338,74 +458,61 @@ const productCrawler = new PlaywrightCrawler({
                 });
                 return sizeList;
             }).catch(() => []);
-
+            
             // Objet pour stocker les images par couleur
             const colorImages = {};
-
-            // Pour chaque couleur, simuler un clic et récupérer UNIQUEMENT les images de cette couleur
+            
+            // Pour chaque couleur, cliquer et extraire les images
             for (const color of colors) {
                 try {
-                    // Trouver tous les boutons de couleur avec leurs titres
                     const colorButtons = await page.$$('.color-tooltip');
                     
                     for (const button of colorButtons) {
                         try {
-                            // Extraire le titre de la couleur
                             const colorTitle = await button.$eval('.color-feature-title', 
-                                (el) => el.textContent.trim()
+                                el => el.textContent.trim()
                             ).catch(() => null);
-
+                            
                             if (colorTitle === color) {
                                 // Faire défiler jusqu'au bouton
-                                await button.scrollIntoViewIfNeeded();
-                                await page.waitForTimeout(500);
+                                await button.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+                                await page.waitForTimeout(randomDelay(500, 1000));
                                 
-                                // Trouver l'élément cliquable (pdp-colors ou le bouton lui-même)
+                                // Cliquer sur le bouton
                                 const clickableElement = await button.$('.pdp-colors').catch(() => button);
+                                await clickableElement.click({ delay: randomDelay(100, 300) });
                                 
-                                // Cliquer sur l'élément
-                                await clickableElement.click({ force: true });
+                                // Attendre que les images se chargent
+                                await page.waitForTimeout(randomDelay(2000, 3000));
                                 
-                                // Attendre que AngularJS mette à jour le DOM avec les nouvelles images
-                                await page.waitForTimeout(3000);
-                                
-                                // Attendre que le conteneur preview-thumbnail soit visible et contienne des images
+                                // Attendre que le conteneur soit visible
                                 try {
-                                    await page.waitForSelector('ul.preview-thumbnail:not([style*="display: none"])', { 
+                                    await page.waitForSelector('ul.preview-thumbnail', { 
                                         timeout: 5000,
-                                        state: 'visible' 
+                                        visible: true
                                     });
                                 } catch (e) {
-                                    console.log(`Le conteneur preview-thumbnail n'est pas visible pour ${color}`);
+                                    console.log(`Conteneur preview-thumbnail non visible pour ${color}`);
                                 }
                                 
-                                // Extraire UNIQUEMENT les images dans ul.preview-thumbnail après le clic sur cette couleur
+                                // Extraire les images depuis ul.preview-thumbnail
                                 const imageUrls = await page.evaluate(() => {
                                     const images = [];
-                                    
-                                    // Chercher UNIQUEMENT dans ul.preview-thumbnail
                                     const previewThumbnail = document.querySelector('ul.preview-thumbnail');
                                     
-                                    if (!previewThumbnail) {
-                                        return images;
-                                    }
+                                    if (!previewThumbnail) return images;
                                     
-                                    // Vérifier que le conteneur est visible
                                     const containerStyle = window.getComputedStyle(previewThumbnail);
                                     if (containerStyle.display === 'none' || containerStyle.visibility === 'hidden') {
                                         return images;
                                     }
                                     
-                                    // Chercher toutes les images dans les li.preview-image
                                     const listItems = previewThumbnail.querySelectorAll('li.preview-image');
                                     
                                     listItems.forEach(li => {
                                         const img = li.querySelector('img');
-                                        if (!img) {
-                                            return;
-                                        }
+                                        if (!img) return;
                                         
-                                        // Vérifier que l'image est visible
                                         const imgStyle = window.getComputedStyle(img);
                                         if (imgStyle.display === 'none' || 
                                             imgStyle.visibility === 'hidden' || 
@@ -413,7 +520,6 @@ const productCrawler = new PlaywrightCrawler({
                                             return;
                                         }
                                         
-                                        // Extraire l'URL de l'image
                                         const src = img.getAttribute('src') || 
                                                    img.getAttribute('data-ng-src') || 
                                                    img.getAttribute('ng-src') ||
@@ -427,7 +533,6 @@ const productCrawler = new PlaywrightCrawler({
                                                 fullUrl = 'https://www.fruitoftheloom.eu' + src;
                                             }
                                             
-                                            // Éviter les doublons
                                             if (!images.includes(fullUrl.trim())) {
                                                 images.push(fullUrl.trim());
                                             }
@@ -435,66 +540,51 @@ const productCrawler = new PlaywrightCrawler({
                                     });
                                     
                                     return images;
-                                }).catch(() => []);
-
+                                });
+                                
                                 if (imageUrls.length > 0) {
                                     colorImages[color] = imageUrls;
                                     console.log(`Images trouvées pour ${color}: ${imageUrls.length}`);
-                                } else {
-                                    console.log(`Aucune image visible trouvée pour ${color}`);
                                 }
                                 
-                                break; // Sortir de la boucle une fois la couleur trouvée
+                                break;
                             }
                         } catch (btnError) {
-                            // Continuer avec le bouton suivant
                             continue;
                         }
                     }
                 } catch (error) {
-                    console.log(`Erreur lors de l'extraction des images pour la couleur ${color}: ${error.message}`);
+                    console.log(`Erreur lors de l'extraction des images pour ${color}: ${error.message}`);
                 }
             }
-
-            // Si aucune image n'a été trouvée par couleur, essayer de récupérer les images par défaut depuis preview-thumbnail
+            
+            // Si aucune image trouvée, essayer de récupérer les images par défaut
             if (Object.keys(colorImages).length === 0) {
                 const defaultImages = await page.evaluate(() => {
                     const images = [];
-                    
-                    // Chercher UNIQUEMENT dans ul.preview-thumbnail
                     const previewThumbnail = document.querySelector('ul.preview-thumbnail');
                     
-                    if (!previewThumbnail) {
-                        return images;
-                    }
+                    if (!previewThumbnail) return images;
                     
-                    // Vérifier que le conteneur est visible
                     const containerStyle = window.getComputedStyle(previewThumbnail);
                     if (containerStyle.display === 'none' || containerStyle.visibility === 'hidden') {
                         return images;
                     }
                     
-                    // Chercher toutes les images dans les li.preview-image
                     const listItems = previewThumbnail.querySelectorAll('li.preview-image');
                     
                     listItems.forEach(li => {
                         const img = li.querySelector('img');
-                        if (!img) {
-                            return;
-                        }
+                        if (!img) return;
                         
-                        // Vérifier que l'image est visible
                         const imgStyle = window.getComputedStyle(img);
-                        if (imgStyle.display === 'none' || 
-                            imgStyle.visibility === 'hidden' || 
-                            parseFloat(imgStyle.opacity) < 0.1) {
+                        if (imgStyle.display === 'none' || imgStyle.visibility === 'hidden') {
                             return;
                         }
                         
                         const src = img.getAttribute('src') || 
                                    img.getAttribute('data-ng-src') || 
-                                   img.getAttribute('ng-src') ||
-                                   img.getAttribute('data-src');
+                                   img.getAttribute('ng-src');
                         
                         if (src && (src.includes('product') || src.includes('cdn'))) {
                             let fullUrl = src;
@@ -511,68 +601,39 @@ const productCrawler = new PlaywrightCrawler({
                     });
                     
                     return images;
-                }).catch(() => []);
-
+                });
+                
                 if (defaultImages.length > 0 && colors.length > 0) {
-                    // Associer les images à la première couleur disponible
                     colorImages[colors[0]] = defaultImages;
                 } else if (defaultImages.length > 0) {
-                    // Si pas de couleurs mais des images, les associer à "Default"
                     colorImages['Default'] = defaultImages;
                 }
             }
-
+            
             // Formater les données du produit
-            // Convertir ColorImage en JSON string pour qu'il soit dans une seule colonne
             const productData = {
                 SKU: sku || '',
                 Name: name || '',
                 Colors: colors.join(';'),
                 Size: sizes.join(';'),
-                ColorImage: JSON.stringify(colorImages), // Convertir l'objet en JSON string pour une seule colonne
+                ColorImage: JSON.stringify(colorImages),
                 Category: category || '',
                 URL: url,
                 ScrapedAt: new Date().toISOString(),
             };
-
+            
             // Sauvegarder le produit
             await Dataset.pushData(productData);
             processedProducts.add(url);
             productsProcessedCount++;
-
-            console.log(`Produit extrait: ${sku} - ${name} (${productsProcessedCount}/${maxProducts})`);
             
-            // Vérifier si on a atteint la limite
-            if (productsProcessedCount >= maxProducts) {
-                console.log(`Limite de ${maxProducts} produit(s) atteinte. Arrêt du traitement.`);
-            }
-
+            console.log(`Produit extrait: ${sku} - ${name} (${productsProcessedCount}${maxProducts ? `/${maxProducts}` : ''})`);
+            
+            // Délai aléatoire après traitement
+            await page.waitForTimeout(randomDelay(2000, 4000));
+            
         } catch (error) {
             console.error(`Erreur lors du traitement du produit ${url}: ${error.message}`);
-            // Si c'est juste un timeout de sélecteur, essayer de sauvegarder ce qu'on a pu extraire
-            if (error.message.includes('Timeout') || error.message.includes('waitForSelector')) {
-                console.log(`Tentative de récupération des données partielles pour ${url}`);
-                // Essayer d'extraire au moins l'URL et la date
-                try {
-                    const partialData = {
-                        SKU: '',
-                        Name: '',
-                        Colors: '',
-                        Size: '',
-                        ColorImage: JSON.stringify({}), // Convertir en JSON string pour une seule colonne
-                        Category: '',
-                        URL: url,
-                        ScrapedAt: new Date().toISOString(),
-                        Error: error.message,
-                    };
-                    await Dataset.pushData(partialData);
-                    processedProducts.add(url);
-                    console.log(`Données partielles sauvegardées pour ${url}`);
-                } catch (saveError) {
-                    console.error(`Impossible de sauvegarder les données partielles: ${saveError.message}`);
-                }
-            }
-            // Relancer l'erreur pour que le crawler puisse réessayer
             throw error;
         }
     },
@@ -580,54 +641,33 @@ const productCrawler = new PlaywrightCrawler({
     requestQueue: productQueue,
 });
 
-// Démarrer le scraping
+// ============================================================================
+// DÉMARRAGE DU SCRAPING
+// ============================================================================
+
 console.log('Démarrage du scraping...');
 console.log(`URLs de départ: ${JSON.stringify(startUrls)}`);
 
-// Ajouter les URLs de départ à la file d'attente du catalogue AVANT de démarrer le crawler
+// Ajouter les URLs de départ à la file d'attente du catalogue
 for (const startUrl of startUrls) {
-    const urlToAdd = startUrl.url || startUrl;
-    console.log(`Ajout de l'URL catalogue: ${urlToAdd}`);
-    try {
-        const request = await catalogQueue.addRequest({ 
-            url: urlToAdd,
-            uniqueKey: urlToAdd
-        });
-        console.log(`Requête ajoutée avec ID: ${request.requestId || 'N/A'}`);
-    } catch (error) {
-        console.error(`Erreur lors de l'ajout de la requête: ${error.message}`);
-    }
+    await catalogQueue.addRequest({ url: startUrl.url || startUrl });
 }
 
-// Attendre un peu pour s'assurer que les requêtes sont bien enregistrées
-await new Promise(resolve => setTimeout(resolve, 2000));
+// Phase 1: Scraper les pages de catalogue pour collecter toutes les URLs de produits
+console.log('Phase 1: Extraction des URLs de produits...');
+await catalogCrawler.run();
 
-// Vérifier que les URLs ont été ajoutées
-const catalogQueueInfo = await catalogQueue.getInfo();
-console.log(`File d'attente catalogue - Requêtes en attente: ${catalogQueueInfo.pendingRequestCount || 0}, Total: ${catalogQueueInfo.totalRequestCount || 0}, Traitées: ${catalogQueueInfo.handledRequestCount || 0}`);
-
-if (catalogQueueInfo.pendingRequestCount === 0 && catalogQueueInfo.totalRequestCount === 0) {
-    console.error('ERREUR: Aucune requête dans la file d\'attente! Le crawler ne pourra pas fonctionner.');
-} else {
-    console.log('Démarrage du crawler catalogue...');
-    // D'abord, scraper les pages de catalogue pour collecter toutes les URLs de produits
-    await catalogCrawler.run();
-}
-
-// Vérifier l'état de la file d'attente des produits
 const productQueueInfo = await productQueue.getInfo();
-console.log(`File d'attente produits - Requêtes en attente: ${productQueueInfo.pendingRequestCount || 0}, Total: ${productQueueInfo.totalRequestCount || 0}, Traitées: ${productQueueInfo.handledRequestCount || 0}`);
+console.log(`Phase 1 terminée. URLs produits collectées: ${productQueueInfo.pendingRequestCount || 0}`);
 
-if (productQueueInfo.pendingRequestCount === 0 && productQueueInfo.totalRequestCount === 0) {
-    console.warn('ATTENTION: Aucune URL produit dans la file d\'attente. Le crawler produit ne pourra pas fonctionner.');
-    console.log('Vérification: Est-ce que le crawler catalogue a bien trouvé des liens produits?');
-} else {
-    console.log(`Démarrage du crawler produit avec ${productQueueInfo.pendingRequestCount || 0} requêtes en attente...`);
-    // Ensuite, scraper toutes les pages produits
+// Phase 2: Scraper toutes les pages produits
+if (productQueueInfo.pendingRequestCount > 0) {
+    console.log('Phase 2: Scraping des pages produits...');
     await productCrawler.run();
+} else {
+    console.log('Aucune URL produit à traiter.');
 }
 
 console.log('Scraping terminé!');
 
 await Actor.exit();
-
