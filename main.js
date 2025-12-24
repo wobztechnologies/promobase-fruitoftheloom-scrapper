@@ -54,6 +54,12 @@ const catalogCrawler = new PuppeteerCrawler({
     maxRequestRetries,
     requestHandlerTimeoutSecs: 300,
     
+    launchContext: {
+        launchOptions: {
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+        },
+    },
+    
     
     preNavigationHooks: [
         async ({ page, request }) => {
@@ -292,6 +298,12 @@ const productCrawler = new PuppeteerCrawler({
     maxConcurrency: maxConcurrency,
     maxRequestRetries,
     requestHandlerTimeoutSecs: 300,
+    
+    launchContext: {
+        launchOptions: {
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+        },
+    },
     
     
     preNavigationHooks: [
@@ -645,3 +657,4 @@ if (productQueueInfo.pendingRequestCount > 0) {
 console.log('Scraping terminé!');
 
 await Actor.exit();
+
